@@ -545,8 +545,15 @@ bool ParseTools(const json::Value* tools,
         sampling::JsonConstraint::Compile(*function_obj.find("parameters"),
                                           true);
       } catch (const std::exception& exception) {
-        *error = exception.what();
-        return false;
+        // OpenAI SDKs mark every function strict by default, and clients
+        // written against llama.cpp (which ignores strict) send schemas the
+        // exact compiler cannot take. Rejecting the request would make the
+        // tool unusable; the best-effort constraints a non-strict tool gets
+        // still enforce everything the schema's supported parts declare.
+        Logger::Warn("tools", "event=strict_schema_fallback tool=" +
+                                  tool.name + " reason=\"" +
+                                  std::string(exception.what()) + "\"");
+        function_obj["strict"] = false;
       }
     }
     tool.parameters_json = function_obj.find("parameters")->dump();

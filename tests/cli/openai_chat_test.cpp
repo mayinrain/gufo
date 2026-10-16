@@ -2643,8 +2643,8 @@ void TestStructuredResponseFormat() {
   }
   // #580: as in llama.cpp, response schemas that omit additionalProperties
   // are admitted and keep declared objects closed; additionalProperties true
-  // or a schema admits extra keys. Strict tool parameters keep requiring
-  // explicitly closed objects.
+  // or a schema admits extra keys. A strict tool without an explicitly closed
+  // object cannot be compiled exactly and is served best-effort instead.
   {
     auto open = gufo::json::parse(
         R"({"model":"test-model","messages":[{"role":"user","content":"Who?"}],
@@ -2674,11 +2674,25 @@ void TestStructuredResponseFormat() {
             "parameters":{"type":"object","properties":{"x":{"type":"string"}},
             "required":["x"]}}}])");
     const auto calls = backend.chat_calls.load();
-    const auto rejected =
+    const auto relaxed =
         gufo::server::HandleOpenAiChat(Request(open.dump()), backend);
-    Expect(rejected.status == 400 && backend.chat_calls == calls &&
-               rejected.body.find("invalid_tools") != std::string::npos,
-           "strict tools still require closed parameter objects");
+    Expect(relaxed.status == 200 && backend.chat_calls == calls + 1 &&
+               backend.last_request.tools.size() == 1 &&
+               backend.last_request.tools[0].definition_json.find(
+                   "\"strict\":false") != std::string::npos,
+           "a strict tool the exact compiler cannot take degrades to "
+           "best-effort instead of rejecting the request");
+    open["tools"] = gufo::json::parse(
+        R"([{"type":"function","function":{"name":"f","strict":true,
+            "parameters":{"type":"object","properties":{"x":{"type":"string",
+            "default":"a","examples":["a","b"]}},"required":["x"],
+            "additionalProperties":false}}}])");
+    const auto annotated =
+        gufo::server::HandleOpenAiChat(Request(open.dump()), backend);
+    Expect(annotated.status == 200 &&
+               backend.last_request.tools[0].definition_json.find(
+                   "\"strict\":true") != std::string::npos,
+           "annotation keywords keep a strict tool strict");
     gufo::server::ChatRequest responses;
     Expect(!gufo::server::ParseOpenAiResponseControls(
                gufo::json::parse(R"({"text":{"format":{"type":"json_schema",
@@ -2889,8 +2903,7 @@ void TestStrictToolSchema() {
       {R"({"tool_choice":{"type":"function","function":{"name":"absent"}}})",
        R"({"parallel_tool_calls":"false"})",
        R"({"tools":[{"type":"function","function":{"name":"bad<name","parameters":{}}}]})",
-       R"({"tools":[{"type":"function","function":{"name":"f"}},{"type":"function","function":{"name":"f"}}]})",
-       R"({"tools":[{"type":"function","function":{"name":"bad","strict":true,"parameters":{"type":"object"}}}]})"}) {
+       R"({"tools":[{"type":"function","function":{"name":"f"}},{"type":"function","function":{"name":"f"}}]})"}) {
     FakeBackend backend;
     auto request = body;
     const auto fields = gufo::json::parse(invalid);

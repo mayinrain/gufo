@@ -122,6 +122,54 @@ void TestRejectedSchemas() {
   }
 }
 
+// Annotation keywords describe a schema without constraining it, so a strict
+// compile accepts them anywhere and the language is unchanged. Unknown
+// keywords next to them are still errors.
+void TestAnnotationKeywords() {
+  const auto plain = parse(R"({
+    "type":"object","properties":{
+      "unit":{"type":"string","enum":["c","f"]},
+      "days":{"type":"integer"},
+      "city":{"$ref":"#/$defs/name"},
+      "mode":{"anyOf":[{"type":"string"},{"type":"null"}]}},
+    "required":["unit","days","city","mode"],"additionalProperties":false,
+    "$defs":{"name":{"type":"string"}}})");
+  const auto annotated = parse(R"({
+    "$schema":"https://json-schema.org/draft/2020-12/schema",
+    "$comment":"weather tool","title":"Weather","description":"Forecast",
+    "type":"object","properties":{
+      "unit":{"type":"string","enum":["c","f"],"default":"c",
+              "examples":["c"],"deprecated":false},
+      "days":{"type":"integer","default":3,"readOnly":false,"writeOnly":false},
+      "city":{"$ref":"#/$defs/name","default":"Paris","description":"where"},
+      "mode":{"anyOf":[{"type":"string"},{"type":"null"}],"default":null}},
+    "required":["unit","days","city","mode"],"additionalProperties":false,
+    "$defs":{"name":{"type":"string","default":"x","title":"Name"}}})");
+  const auto expected = JsonConstraint::Compile(plain, true);
+  const auto actual = JsonConstraint::Compile(annotated, true);
+  for (const char* text :
+       {R"({"unit":"c","days":3,"city":"Paris","mode":null})",
+        R"({"unit":"f","days":-1,"city":"","mode":"fast"})",
+        R"({"unit":"k","days":3,"city":"Paris","mode":null})",
+        R"({"unit":"c","days":3,"city":"Paris"})",
+        R"({"unit":"c","days":3,"city":1,"mode":null})",
+        R"({"unit":"c","days":3,"city":"Paris","mode":null,"default":"c"})"})
+    assert(Accepts(*expected, text) == Accepts(*actual, text));
+  assert(Accepts(*actual, R"({"unit":"c","days":3,"city":"Paris","mode":null})"));
+  assert(!Accepts(*actual, R"({"unit":"k","days":3,"city":"Paris","mode":null})"));
+  bool rejected = false;
+  try {
+    (void)JsonConstraint::Compile(
+        parse(R"({"type":"object","properties":{"x":{"type":"integer",
+                 "default":1,"uniqueItems":true}},"required":["x"],
+                 "additionalProperties":false})"),
+        true);
+  } catch (const std::invalid_argument&) {
+    rejected = true;
+  }
+  assert(rejected);
+}
+
 void TestSchemaIntersections() {
   const auto grammar = JsonConstraint::Compile(parse(R"({
     "type":"object","properties":{
@@ -2140,6 +2188,7 @@ int main(int argc, char** argv) {
   TestSchemaIntersections();
   TestMixedEnumValues();
   TestRejectedSchemas();
+  TestAnnotationKeywords();
   TestOpenResponseObjects();
   TestIntegerBoundsAndRecursion();
   TestPrimitiveConstraints();

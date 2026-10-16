@@ -42,6 +42,16 @@ bool HasPropertySchemas(const json::Value& schema) {
   return false;
 }
 
+// Annotation keywords (JSON Schema 2020-12 §9) carry no validation semantics,
+// so they can never change the accepted language. Agent SDKs emit them from
+// field defaults and docstrings, and llama.cpp's grammar converter ignores
+// them; a strict tool must not be rejected for them.
+bool AnnotationKeyword(std::string_view key) {
+  return key == "title" || key == "description" || key == "default" ||
+         key == "examples" || key == "$comment" || key == "$schema" ||
+         key == "deprecated" || key == "readOnly" || key == "writeOnly";
+}
+
 bool AdmitsExtraProperties(const json::Value& schema) {
   if (HasPropertySchemas(schema))
     return true;
@@ -712,14 +722,11 @@ private:
       if (!seen.insert(schema).second)
         return nullptr;
       for (const auto& [key, value] : schema->members()) {
-        if (key == "$ref" || key == "$defs" || key == "title" ||
-            key == "description")
+        if (key == "$ref" || key == "$defs" || AnnotationKeyword(key))
           continue;
         if (strict_)
           return nullptr;
-        if (key == "$schema" || key == "$id" || key == "$comment" ||
-            key == "definitions" || key == "examples" || key == "default" ||
-            key == "deprecated" || key == "readOnly" || key == "writeOnly")
+        if (key == "$id" || key == "definitions")
           continue;
         if (key != "type" || (type && !EqualValue(*type, value)))
           return nullptr;
@@ -883,6 +890,17 @@ private:
         result.append_member(key, value);
     return result;
   }
+  // The constraining siblings of an applicator: `keys` and annotations
+  // removed, so a $ref or anyOf next to a default/description stays a plain
+  // reference instead of an intersection.
+  static json::Value Constraints(const json::Value& schema,
+                                 std::initializer_list<std::string_view> keys) {
+    auto result = json::Value::object();
+    for (const auto& [key, value] : schema.members())
+      if (std::ranges::find(keys, key) == keys.end() && !AnnotationKeyword(key))
+        result.append_member(key, value);
+    return result;
+  }
   json::Value Conjoin(const json::Value& left, const json::Value& right,
                       unsigned depth = 0) {
     if (depth > 64)
@@ -929,7 +947,7 @@ private:
     auto result = left;
     for (const auto& [key, value] : right.members()) {
       const auto* previous = left.find(key);
-      if (key == "title" || key == "description" || !previous) {
+      if (AnnotationKeyword(key) || !previous) {
         result[key] = value;
         continue;
       }
@@ -1362,7 +1380,8 @@ private:
                                                     "minLength",
                                                     "maxLength"};
     for (const auto& [key, value] : schema.members()) {
-      if (!allowed.contains(key) && !ignore_unknown_keys_)
+      if (!allowed.contains(key) && !AnnotationKeyword(key) &&
+          !ignore_unknown_keys_)
         Invalid("unsupported keyword: " + key);
       if ((key == "title" || key == "description") && !value.is_string())
         Invalid(key + " must be a string");
@@ -1418,8 +1437,7 @@ private:
       }
     }
     if (const auto* ref = schema.find("$ref")) {
-      const auto siblings =
-          Without(schema, {"$ref", "$defs", "title", "description"});
+      const auto siblings = Constraints(schema, {"$ref", "$defs"});
       return siblings.empty()
                  ? Visit(*Reference(*ref), depth)
                  : Visit(Store(Conjoin(*Reference(*ref), siblings)), depth);
@@ -1427,8 +1445,7 @@ private:
     if (const auto* any = schema.find("anyOf")) {
       if (!any->is_array() || any->size() == 0)
         Invalid("anyOf needs at least one branch");
-      const auto siblings =
-          Without(schema, {"anyOf", "$defs", "title", "description"});
+      const auto siblings = Constraints(schema, {"anyOf", "$defs"});
       Sequence branches;
       for (const auto& value : any->items()) {
         try {
@@ -1443,9 +1460,7 @@ private:
     const auto* type = schema.find("type");
     // An unconstrained leaf is a valid JSON Schema, not a reason to discard
     // the requirements on its containing array/object.
-    if (!type && open_objects_ &&
-        Without(schema, {"title", "description", "default", "examples"})
-            .empty())
+    if (!type && open_objects_ && Constraints(schema, {}).empty())
       return GenericValue(kMaxDepth - depth);
     std::vector<std::string> types;
     if (type && type->is_string())
