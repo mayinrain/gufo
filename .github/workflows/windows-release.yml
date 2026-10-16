@@ -122,7 +122,7 @@ jobs:
           # The pin may have aged off AMD's ~6-week nightly index; fall back
           # to this repository's toolchain mirror release.
           $version = $env:SDK_TARBALL -replace '^therock-dist-windows-gfx1151-', '' -replace '\.tar\.gz$', ''
-          $mirrorUrl = "https://github.com/$env:GITHUB_REPOSITORY/releases/download/toolchain/therock-$version/$env:SDK_TARBALL"
+          $mirrorUrl = "https://github.com/endyjasmi/gufo/releases/download/toolchain/therock-$version/$env:SDK_TARBALL"
           curl.exe --fail --location --retry 3 --output "$out" "$mirrorUrl"
           if ($LASTEXITCODE -ne 0) { throw "curl failed with exit code $LASTEXITCODE for both $amdUrl and $mirrorUrl" }
 
